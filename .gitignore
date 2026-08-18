@@ -1,0 +1,7 @@
+__pycache__/
+venv/
+venv2/
+.env
+.vscode/
+qdrant_data/
+*.parquet

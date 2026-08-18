@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+qdrant-client
+sentence-transformers
+rank-bm25
+python-multipart
+google-genai
+requests
+tenacity
+datasets
+nltk
+pydantic
+scikit-learn
