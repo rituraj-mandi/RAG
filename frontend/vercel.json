@@ -1,8 +1,8 @@
 {
-    "rewrites": [
-      {
-        "source": "/api/(.*)",
-        "destination": "http://<YOUR_EC2_PUBLIC_IP>:8000/api/$1"
-      }
-    ]
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "http://13.60.188.83:8000/api/$1"
+    }
+  ]
 }
