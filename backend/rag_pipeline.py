@@ -1,9 +1,9 @@
 import os
 import time
 import requests
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.models import PointStruct
-from fastembed import TextEmbedding
+from fastembed import TextEmbedding, SparseTextEmbedding
 from sentence_transformers import CrossEncoder
 from google import genai
 from google.genai import types
@@ -16,7 +16,8 @@ class RAGPipeline:
         self.collection_name = collection_name
         
         # Load embedding models for query
-        self.dense_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        self.dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
         
         # Load Reranker
         print("Loading reranker...")
@@ -53,20 +54,40 @@ class RAGPipeline:
             raise Exception("Failed to transcribe audio")
 
     def retrieve(self, query, top_k=20):
-        # Generate query embeddings
-        dense_vec = list(self.dense_model.query_embed(query))[0].tolist()
+        # Generate query embeddings (Dense + Sparse)
+        dense_vec = list(self.dense_model.embed([query]))[0].tolist()
+        sparse_embed = list(self.sparse_model.embed([query]))[0]
+        sparse_vec = models.SparseVector(
+            indices=sparse_embed.indices.tolist(),
+            values=sparse_embed.values.tolist()
+        )
+        
+        # Hybrid Search using Prefetch and RRF Fusion
+        prefetch = [
+            models.Prefetch(
+                query=dense_vec,
+                using="dense",
+                limit=top_k
+            ),
+            models.Prefetch(
+                query=sparse_vec,
+                using="sparse",
+                limit=top_k
+            )
+        ]
+        
         query_res = self.client.query_points(
             collection_name=self.collection_name,
-            query=dense_vec,
-            using="dense",
+            prefetch=prefetch,
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=top_k
         )
-        dense_hits = query_res.points
+        hybrid_hits = query_res.points
         
-        # Combine unique documents
+        # Combine unique documents by metadata doc_id
         unique_docs = {}
-        for hit in dense_hits:
-            doc_id = hit.id
+        for hit in hybrid_hits:
+            doc_id = hit.payload.get('doc_id', hit.id)
             if doc_id not in unique_docs:
                 unique_docs[doc_id] = hit.payload['text']
                 
