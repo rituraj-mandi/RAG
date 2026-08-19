@@ -1,6 +1,14 @@
 import os
 import uuid
+from dotenv import load_dotenv
 from datasets import load_dataset
+
+load_dotenv()
+
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+if not HF_TOKEN:
+    raise RuntimeError("HF_TOKEN is not set")
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct, SparseVectorParams, SparseIndexParams, SparseVector
 from fastembed import TextEmbedding, SparseTextEmbedding
@@ -44,7 +52,13 @@ def get_semantic_chunks(text, max_words=100):
 def main():
     print("Loading MSMARCO-XI streaming dataset...")
     # Stream the dataset to avoid large memory/disk footprint and rate limits
-    ds = load_dataset("ai4bharat/MSMARCO-XI", "default", split="train", streaming=True)
+    ds = load_dataset(
+        "ai4bharat/MSMARCO-XI",
+        "default",
+        split="train",
+        streaming=True,
+        token=HF_TOKEN
+    )
     
     unique_passages = {}
     max_items = 500  # Adjust as needed for deployment size
