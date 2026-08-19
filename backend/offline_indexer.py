@@ -9,75 +9,50 @@ import nltk
 nltk.download('punkt')
 nltk.download('punkt_tab')
 
-def get_sliding_window_chunks(text, window_size=300, overlap=50):
-    words = text.split()
-    if len(words) <= window_size:
-        return [text]
-    
-    chunks = []
-    i = 0
-    while i < len(words):
-        chunk = " ".join(words[i:i+window_size])
-        chunks.append(chunk)
-        i += (window_size - overlap)
-    return chunks
 
-def get_semantic_chunks(text, max_words=100):
-    sentences = nltk.sent_tokenize(text)
-    chunks = []
-    current_chunk = []
-    current_length = 0
-    
-    for sentence in sentences:
-        words = len(sentence.split())
-        if current_length + words > max_words and current_chunk:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = []
-            current_length = 0
-        current_chunk.append(sentence)
-        current_length += words
-        
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-    return chunks
+def get_dir_size(path="."):
+    total = 0
+    with os.scandir(path) as it:
+        for entry in it:
+            if entry.is_file():
+                total += entry.stat().st_size
+            elif entry.is_dir():
+                total += get_dir_size(entry.path)
+    return total
 
 def main():
-    print("Loading dataset...")
-    print("Using a synthetic representative subset (HuggingFace is rate-limiting the download without a token)")
+    import argparse
+    import time
+    from dotenv import load_dotenv
     
-    # Synthetic representative subset of MSMARCO-XI like passages (English and Hindi)
-    synthetic_passages = [
-        {"english_passage": "The Taj Mahal is an ivory-white marble mausoleum on the right bank of the river Yamuna in Agra, Uttar Pradesh, India.", "hindi_passage": "ताजमहल भारत के उत्तर प्रदेश के आगरा में यमुना नदी के दाहिने किनारे पर एक हाथीदांत-सफेद संगमरमर का मकबरा है।"},
-        {"english_passage": "New Delhi is the capital of India and a part of the National Capital Territory of Delhi.", "hindi_passage": "नई दिल्ली भारत की राजधानी है और दिल्ली के राष्ट्रीय राजधानी क्षेत्र का एक हिस्सा है।"},
-        {"english_passage": "The Ganges is a trans-boundary river of Asia which flows through India and Bangladesh.", "hindi_passage": "गंगा एशिया की एक सीमा पार नदी है जो भारत और बांग्लादेश से होकर बहती है।"},
-        {"english_passage": "Mount Everest is Earth's highest mountain above sea level, located in the Mahalangur Himal sub-range of the Himalayas.", "hindi_passage": "माउंट एवरेस्ट समुद्र तल से ऊपर पृथ्वी का सबसे ऊँचा पर्वत है, जो हिमालय की महालंगूर हिमाल उप-श्रृंखला में स्थित है।"},
-        {"english_passage": "Diwali is the Hindu festival of lights, with variations celebrated in other Indian religions. It symbolises the spiritual victory of light over darkness.", "hindi_passage": "दिवाली रोशनी का हिंदू त्योहार है, जिसे अन्य भारतीय धर्मों में भी मनाया जाता है। यह अंधकार पर प्रकाश की आध्यात्मिक जीत का प्रतीक है।"},
-        {"english_passage": "Robotics is an interdisciplinary branch of computer science and engineering. Robotics involves design, construction, operation, and use of robots. The goal of robotics is to design machines that can help and assist humans.", "hindi_passage": "रोबोटिक्स कंप्यूटर विज्ञान और इंजीनियरिंग की एक अंतःविषय शाखा है।"},
-        {"english_passage": "The immediate impact of the success of the Manhattan Project was the atomic bombings of Hiroshima and Nagasaki in August 1945, which quickly led to the surrender of Japan and the end of World War II.", "hindi_passage": "मैनहट्टन प्रोजेक्ट की सफलता का तत्काल प्रभाव अगस्त 1945 में हिरोशिमा और नागासाकी पर परमाणु बमबारी था।"}
-    ]
+    parser = argparse.ArgumentParser(description="Index MSMARCO dataset into Qdrant")
+    parser.add_argument("--reset", action="store_true", help="Delete and recreate the Qdrant collection")
+    args = parser.parse_args()
     
-    unique_passages = {}
-    count = 0
-    max_items = 5
-    for item in synthetic_passages:
-        if count >= max_items:
-            break
-            
-        text = item.get("english_passage", "")
-        hindi = item.get("hindi_passage", "")
+    load_dotenv()
+    hf_token = os.getenv("HF_TOKEN")
+    
+    print("Loading dataset from HuggingFace...")
+    if not hf_token:
+        print("WARNING: HF_TOKEN not found in environment. Streaming might be rate-limited or blocked.")
         
-        full_text = f"{text}\n{hindi}"
-        if full_text not in unique_passages:
-            unique_passages[full_text] = {"source": "msmarco_synthetic", "doc_id": str(uuid.uuid4())[:8]}
-        count += 1
-            
-    print(f"Extracted {len(unique_passages)} unique passages.")
-    
+    try:
+        # Load dataset in streaming mode so we don't download everything into memory
+        ds = load_dataset('ai4bharat/MSMARCO-XI', 'default', split='train', streaming=True, token=hf_token)
+    except Exception as e:
+        print(f"Failed to connect to HuggingFace: {e}")
+        return
+
     client = QdrantClient(path="./qdrant_data")
     collection_name = "msmarco_hybrid"
     
+    if args.reset:
+        print(f"Reset flag passed. Deleting existing collection '{collection_name}' if it exists...")
+        if client.collection_exists(collection_name):
+            client.delete_collection(collection_name)
+    
     print("Loading embedding models...")
-    dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    dense_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     
     if not client.collection_exists(collection_name):
         client.create_collection(
@@ -86,54 +61,91 @@ def main():
         )
         print("Created Qdrant collection.")
     else:
-        print("Collection already exists, overwriting points if any, or just appending.")
-    
+        print("Collection already exists, appending new points.")
+
+    max_items = 50000
+    batch_size = 64
     docs_to_embed = []
     metadata_list = []
     
-    for text, meta in unique_passages.items():
-        # Strategy A: Passage
-        docs_to_embed.append(text)
-        metadata_list.append({"text": text, "strategy": "passage", "doc_id": meta["doc_id"]})
-        
-        # Strategy B: Semantic
-        sem_chunks = get_semantic_chunks(text)
-        if len(sem_chunks) > 1:
-            for sc in sem_chunks:
-                docs_to_embed.append(sc)
-                metadata_list.append({"text": sc, "strategy": "semantic", "doc_id": meta["doc_id"]})
-        
-        # Strategy C: Sliding Window
-        sw_chunks = get_sliding_window_chunks(text, window_size=50, overlap=10)
-        if len(sw_chunks) > 1:
-            for swc in sw_chunks:
-                docs_to_embed.append(swc)
-                metadata_list.append({"text": swc, "strategy": "sliding_window", "doc_id": meta["doc_id"]})
-                
-    print(f"Total chunks to index: {len(docs_to_embed)}")
+    count = 0
+    total_indexed = 0
+    start_time = time.time()
     
-    batch_size = 64
-    for i in range(0, len(docs_to_embed), batch_size):
-        batch_docs = docs_to_embed[i:i+batch_size]
-        batch_meta = metadata_list[i:i+batch_size]
+    print(f"Streaming and indexing up to {max_items} passages...")
+    for item in ds:
+        if count >= max_items:
+            break
+            
+        text = item.get("english_passage", "")
+        hindi = item.get("hindi_passage", "")
+        if not text:
+            continue
+            
+        full_text = f"{text}\n{hindi}"
         
-        dense_embeds = list(dense_model.embed(batch_docs))
+        # 1 valid passage -> 1 embedding -> 1 Qdrant point
+        docs_to_embed.append(full_text)
+        metadata_list.append({"text": full_text, "strategy": "passage", "doc_id": str(count)})
         
+        count += 1
+        
+        # Process in batches to save memory
+        if len(docs_to_embed) >= batch_size:
+            dense_embeds = list(dense_model.embed(docs_to_embed))
+            batch_points = []
+            for j, (doc, meta) in enumerate(zip(docs_to_embed, metadata_list)):
+                point_id = total_indexed + j + 1
+                point = PointStruct(
+                    id=point_id,
+                    vector={"dense": dense_embeds[j].tolist()},
+                    payload=meta
+                )
+                batch_points.append(point)
+                
+            client.upsert(collection_name=collection_name, points=batch_points)
+            total_indexed += len(docs_to_embed)
+            docs_to_embed = []
+            metadata_list = []
+            
+            if count % 1000 == 0:
+                print(f"Progress: Read {count}/{max_items} passages. Indexed {total_indexed} chunks.")
+
+    # Process any remaining documents
+    if docs_to_embed:
+        dense_embeds = list(dense_model.embed(docs_to_embed))
         batch_points = []
-        for j, (doc, meta) in enumerate(zip(batch_docs, batch_meta)):
+        for j, (doc, meta) in enumerate(zip(docs_to_embed, metadata_list)):
+            point_id = total_indexed + j + 1
             point = PointStruct(
-                id=str(uuid.uuid4()),
-                vector={
-                    "dense": dense_embeds[j].tolist()
-                },
+                id=point_id,
+                vector={"dense": dense_embeds[j].tolist()},
                 payload=meta
             )
             batch_points.append(point)
             
         client.upsert(collection_name=collection_name, points=batch_points)
-        print(f"Indexed batch {i//batch_size + 1}/{(len(docs_to_embed)+batch_size-1)//batch_size}")
-        
-    print("Indexing complete!")
+        total_indexed += len(docs_to_embed)
+
+    elapsed_time = time.time() - start_time
+    passages_per_sec = count / elapsed_time if elapsed_time > 0 else 0
+    
+    try:
+        db_size_bytes = get_dir_size("./qdrant_data")
+        db_size_mb = db_size_bytes / (1024 * 1024)
+    except Exception:
+        db_size_mb = 0
+
+    print("\n" + "="*40)
+    print("INDEXING SUMMARY")
+    print("="*40)
+    print(f"Passages processed:   {count}")
+    print(f"Vectors indexed:      {total_indexed}")
+    print(f"Elapsed time:         {elapsed_time:.2f} seconds")
+    print(f"Passages/sec:         {passages_per_sec:.2f}")
+    print(f"Qdrant database size: {db_size_mb:.2f} MB")
+    print("="*40)
+
 
 if __name__ == "__main__":
     main()

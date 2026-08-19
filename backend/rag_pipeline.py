@@ -16,7 +16,7 @@ class RAGPipeline:
         self.collection_name = collection_name
         
         # Load embedding models for query
-        self.dense_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        self.dense_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
         
         # Load Reranker
         print("Loading reranker...")
