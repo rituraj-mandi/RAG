@@ -22,6 +22,9 @@ source venv/bin/activate
 echo "Installing dependencies..."
 pip install -r requirements.txt
 
+echo "Building vector database..."
+python offline_indexer.py
+
 echo "Setting up systemd service for uvicorn..."
 cat << 'EOF' | sudo tee /etc/systemd/system/rag-backend.service
 [Unit]
