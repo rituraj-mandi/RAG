@@ -1,21 +1,29 @@
 import os
 import uuid
 from dotenv import load_dotenv
-from datasets import load_dataset
-
-load_dotenv()
-
-HF_TOKEN = os.getenv("HF_TOKEN")
-
-if not HF_TOKEN:
-    raise RuntimeError("HF_TOKEN is not set")
+import pyarrow.parquet as pq
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct, SparseVectorParams, SparseIndexParams, SparseVector
 from fastembed import TextEmbedding, SparseTextEmbedding
 import nltk
 
+load_dotenv()
+
 nltk.download('punkt')
 nltk.download('punkt_tab')
+
+def download_parquet(url, dest):
+    if os.path.exists(dest):
+        print(f"Using cached parquet file: {dest}")
+        return
+    import requests
+    print("Downloading MSMARCO parquet file (approx 200MB)...")
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        with open(dest, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    print("Download complete!")
 
 def get_sliding_window_chunks(text, window_size=300, overlap=50):
     words = text.split()
@@ -50,33 +58,32 @@ def get_semantic_chunks(text, max_words=100):
     return chunks
 
 def main():
-    print("Loading MSMARCO-XI streaming dataset...")
-    # Stream the dataset to avoid large memory/disk footprint and rate limits
-    ds = load_dataset(
-        "ai4bharat/MSMARCO-XI",
-        "default",
-        split="train",
-        streaming=True,
-        token=HF_TOKEN
-    )
+    print("Loading MSMARCO-XI dataset via PyArrow...")
+    parquet_url = "https://huggingface.co/datasets/ai4bharat/MSMARCO-XI/resolve/refs%2Fconvert%2Fparquet/default/validation/0000.parquet"
+    parquet_file = "msmarco_sample.parquet"
+    
+    # Download exactly one parquet file (avoids HF Hub API limits and massive metadata loading)
+    download_parquet(parquet_url, parquet_file)
+    
+    print("Reading table into memory...")
+    table = pq.read_table(parquet_file)
+    passages_col = table.column('passages')
     
     unique_passages = {}
     max_items = 500  # Adjust as needed for deployment size
     
-    for idx, item in enumerate(ds):
-        if idx >= max_items:
-            break
+    for idx in range(min(max_items, len(passages_col))):
+        item = passages_col[idx].as_py()
+        if not item:
+            continue
             
-        # MSMARCO-XI schema has passages['English_passages'] list
-        eng_passages = item.get("passages", {}).get("English_passages", [])
-        
-        # Take the first passage for this query's context
+        eng_passages = item.get("English_passages", [])
         if eng_passages:
             text = eng_passages[0]
             if text not in unique_passages:
                 unique_passages[text] = {"source": "msmarco", "doc_id": str(uuid.uuid4())[:8]}
                 
-    print(f"Extracted {len(unique_passages)} unique passages from stream.")
+    print(f"Extracted {len(unique_passages)} unique passages from dataset.")
     
     client = QdrantClient(path="./qdrant_data")
     collection_name = "msmarco_hybrid"
