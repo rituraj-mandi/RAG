@@ -31,7 +31,7 @@ class RAGPipeline:
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key=nvidia_key
             )
-            self.nvidia_model = "meta/llama3-8b-instruct"
+            self.nvidia_model = "meta/llama-3.1-8b-instruct"
         else:
             print("WARNING: NVIDIA_API_KEY not set. LLM generation disabled.")
             self.nvidia_client = None
