@@ -13,3 +13,4 @@ pydantic
 scikit-learn
 fastembed
 python-dotenv
+openai

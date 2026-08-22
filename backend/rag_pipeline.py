@@ -7,6 +7,7 @@ from fastembed import TextEmbedding, SparseTextEmbedding
 from sentence_transformers import CrossEncoder
 from google import genai
 from google.genai import types
+from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 class RAGPipeline:
@@ -23,16 +24,26 @@ class RAGPipeline:
         print("Loading reranker...")
         self.reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
         
-        # Load LLM
+        # Load Primary LLM (Gemini)
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             self.gemini_client = genai.Client(api_key=api_key)
         else:
-            print("WARNING: GEMINI_API_KEY not set. Using mock LLM generator.")
+            print("WARNING: GEMINI_API_KEY not set.")
             self.gemini_client = None
             
-        # Using flash for lower latency
         self.llm_model = 'gemini-2.5-flash'
+        
+        # Load Fallback LLM (NVIDIA)
+        nvidia_api_key = os.getenv("NVIDIA_API_KEY")
+        if nvidia_api_key:
+            self.nvidia_client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=nvidia_api_key
+            )
+        else:
+            print("WARNING: NVIDIA_API_KEY not set for fallback.")
+            self.nvidia_client = None
         
         self.elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", "")
 
@@ -122,19 +133,38 @@ Context:
 Query: {query}
 Answer:"""
 
-        if not self.gemini_client:
-            time.sleep(0.5)
-            return "Mock answer since API key is absent."
-
-        response = self.gemini_client.models.generate_content(
-            model=self.llm_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=400
-            )
-        )
-        return response.text.strip()
+        # 1. Try Gemini primary
+        if self.gemini_client:
+            try:
+                response = self.gemini_client.models.generate_content(
+                    model=self.llm_model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=400
+                    )
+                )
+                return response.text.strip()
+            except Exception as e:
+                print(f"Gemini API failed (possibly rate limit/tokens ended): {str(e)}")
+        
+        # 2. Fallback to NVIDIA NIM
+        if self.nvidia_client:
+            print("Activating NVIDIA fallback model...")
+            try:
+                completion = self.nvidia_client.chat.completions.create(
+                  model="meta/llama-3.1-8b-instruct",
+                  messages=[{"role": "user", "content": prompt}],
+                  temperature=0.1,
+                  max_tokens=400,
+                )
+                return completion.choices[0].message.content.strip()
+            except Exception as e:
+                print(f"NVIDIA fallback also failed: {str(e)}")
+                return "I'm sorry, but all my language models are currently unavailable."
+        
+        time.sleep(0.5)
+        return "Mock answer since API keys are absent or exhausted."
 
     def run_pipeline_text(self, query):
         metrics = {}

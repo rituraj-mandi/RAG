@@ -70,7 +70,8 @@ def main():
     passages_col = table.column('passages')
     
     unique_passages = {}
-    max_items = 3000  # Adjust as needed for deployment size
+    max_items = 3
+    000  # Adjust as needed for deployment size
     
     for idx in range(min(max_items, len(passages_col))):
         item = passages_col[idx].as_py()
