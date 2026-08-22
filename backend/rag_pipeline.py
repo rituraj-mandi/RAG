@@ -1,12 +1,12 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import time
 import requests
 from qdrant_client import QdrantClient, models
 from qdrant_client.models import PointStruct
 from fastembed import TextEmbedding, SparseTextEmbedding
 from sentence_transformers import CrossEncoder
-from google import genai
-from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 from openai import OpenAI
 
@@ -24,17 +24,7 @@ class RAGPipeline:
         print("Loading reranker...")
         self.reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
         
-        # Load LLM (Gemini Primary)
-        api_key = os.getenv("GEMINI_API_KEY")
-        if api_key:
-            self.gemini_client = genai.Client(api_key=api_key)
-        else:
-            print("WARNING: GEMINI_API_KEY not set. Using mock LLM generator.")
-            self.gemini_client = None
-            
-        self.llm_model = 'gemini-2.5-flash'
-        
-        # Load LLM (NVIDIA Fallback)
+        # Load LLM (NVIDIA)
         nvidia_key = os.getenv("NVIDIA_API_KEY")
         if nvidia_key:
             self.nvidia_client = OpenAI(
@@ -43,7 +33,7 @@ class RAGPipeline:
             )
             self.nvidia_model = "meta/llama3-8b-instruct"
         else:
-            print("WARNING: NVIDIA_API_KEY not set. Fallback disabled.")
+            print("WARNING: NVIDIA_API_KEY not set. LLM generation disabled.")
             self.nvidia_client = None
             
         self.elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY", "")
@@ -134,36 +124,21 @@ Context:
 Query: {query}
 Answer:"""
 
-        if not self.gemini_client:
+        if not self.nvidia_client:
             time.sleep(0.5)
             return "Mock answer since API key is absent."
 
         try:
-            response = self.gemini_client.models.generate_content(
-                model=self.llm_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=150
-                )
+            completion = self.nvidia_client.chat.completions.create(
+                model=self.nvidia_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=150
             )
-            return response.text.strip()
+            return completion.choices[0].message.content.strip()
         except Exception as e:
-            print(f"Gemini API failed: {e}. Activating NVIDIA fallback...")
-            if self.nvidia_client:
-                try:
-                    completion = self.nvidia_client.chat.completions.create(
-                        model=self.nvidia_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.1,
-                        max_tokens=150
-                    )
-                    return completion.choices[0].message.content.strip()
-                except Exception as fallback_e:
-                    print(f"NVIDIA API fallback failed: {fallback_e}")
-                    return "Sorry, both primary and fallback AI models are currently unavailable."
-            else:
-                return "Sorry, the primary AI model failed and no fallback is configured."
+            print(f"NVIDIA API failed: {e}")
+            return "Sorry, the AI model is currently unavailable."
 
     def run_pipeline_text(self, query):
         metrics = {}

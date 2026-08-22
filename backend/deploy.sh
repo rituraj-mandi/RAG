@@ -35,6 +35,7 @@ After=network.target
 User=ubuntu
 Group=www-data
 WorkingDirectory=/home/ubuntu/RAG/backend
+EnvironmentFile=/home/ubuntu/RAG/backend/.env
 Environment="PATH=/home/ubuntu/RAG/backend/venv/bin"
 ExecStart=/home/ubuntu/RAG/backend/venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000
 
